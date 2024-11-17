@@ -1,20 +1,15 @@
-# app.py
-
+from flask import Flask, request, render_template, redirect, url_for
 import os
-from PIL import Image, ImageOps
-import logging
+from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 
-# Configuration
-config = {
-    "background_color": (255, 255, 255),  # Background color (white by default)
-    "output_format": "JPEG",  # Output format (e.g., "PNG", "JPEG")
-    "max_threads": 4,  # Number of threads for parallel processing
-}
+app = Flask(__name__)
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger()
+# Allowed image extensions
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def resize_and_pad(image, target_width, target_height, background_color=(255, 255, 255)):
     """
@@ -30,58 +25,59 @@ def resize_and_pad(image, target_width, target_height, background_color=(255, 25
     new_image.paste(resized_image, paste_position)
     return new_image
 
-def process_image(filename, input_folder, output_folder, target_width, target_height):
+def process_image(file_path, output_path, target_width, target_height, background_color):
     """
     Process a single image: resize, pad, and save.
     """
-    input_path = os.path.join(input_folder, filename)
-    output_path = os.path.join(output_folder, f"{os.path.splitext(filename)[0]}.{config['output_format'].lower()}")
-    
     try:
-        with Image.open(input_path) as img:
-            resized_img = resize_and_pad(img, target_width, target_height, config["background_color"])
-            resized_img.save(output_path, config["output_format"])
-            logger.info(f"Processed and saved: {output_path}")
+        with Image.open(file_path) as img:
+            resized_img = resize_and_pad(img, target_width, target_height, background_color)
+            resized_img.save(output_path, "JPEG")
+            return True
     except Exception as e:
-        logger.error(f"Error processing {filename}: {e}")
+        app.logger.error(f"Error processing image {file_path}: {e}")
+        return False
 
-def main():
-    """
-    Main function to process images.
-    """
-    # Get user input for the input folder
-    input_folder = input("Enter the path to the input folder: ").strip()
+@app.route("/", methods=["GET", "POST"])
+def select_and_process():
+    message = ""
+    message_type = "error"  # Default message type is error
     
-    # Validate the input folder
-    if not os.path.isdir(input_folder):
-        logger.error(f"The specified input folder does not exist: {input_folder}")
-        return
-    
-    # Get user input for the target dimensions
-    try:
-        target_width = int(input("Enter the target width of the image: ").strip())
-        target_height = int(input("Enter the target height of the image: ").strip())
-    except ValueError:
-        logger.error("Invalid input for dimensions. Please enter integers.")
-        return
-    
-    # Define the output folder inside the input folder
-    output_folder = os.path.join(input_folder, "Processed")
-    os.makedirs(output_folder, exist_ok=True)
-    
-    # Find all valid image files in the input folder
-    files = [f for f in os.listdir(input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    if not files:
-        logger.warning("No images found in the input folder.")
-        return
-    
-    logger.info(f"Found {len(files)} images. Starting processing...")
-    
-    # Process images using multithreading
-    with ThreadPoolExecutor(max_workers=config["max_threads"]) as executor:
-        executor.map(lambda f: process_image(f, input_folder, output_folder, target_width, target_height), files)
-    
-    logger.info(f"Processing complete! Processed images are saved in: {output_folder}")
+    if request.method == "POST":
+        # Get the images, dimensions, and background color from the form
+        files = request.files.getlist("files")
+        try:
+            target_width = int(request.form["width"])
+            target_height = int(request.form["height"])
+            bgcolor = request.form["bgcolor"]
+            # Convert the background color from Hex to RGB
+            background_color = tuple(int(bgcolor[i:i+2], 16) for i in (1, 3, 5))
+        except ValueError:
+            message = "Invalid width, height, or background color. Please enter valid values."
+            message_type = "error"
+            return render_template("select.html", message=message, message_type=message_type)
+
+        if not files:
+            message = "No files selected."
+            message_type = "error"
+            return render_template("select.html", message=message, message_type=message_type)
+
+        output_folder = "Processed"
+        os.makedirs(output_folder, exist_ok=True)
+
+        with ThreadPoolExecutor() as executor:
+            for file in files:
+                if allowed_file(file.filename):
+                    file_path = os.path.join(output_folder, file.filename)
+                    file.save(file_path)
+                    output_path = os.path.join(output_folder, f"{os.path.splitext(file.filename)[0]}.jpeg")
+                    executor.submit(process_image, file_path, output_path, target_width, target_height, background_color)
+
+        message = f"Processing complete! Processed images are saved in: {output_folder}"
+        message_type = "success"
+        return render_template("select.html", message=message, message_type=message_type)
+
+    return render_template("select.html", message=message, message_type=message_type)
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
